@@ -16,23 +16,17 @@ It simulates a SOAP/XML web service that exposes a minimal set of customer-relat
 
 The mock server exposes the following SOAP operations:
 
-1. **GetCustomerDetails**
-
-   - **Input:** `customerId`
-   - **Output:** Customer profile (name, email, phone, address).
-
-2. **CreateCustomer**
-
-   - **Input:** Customer details (name, email, NIC/passport, phone).
-   - **Output:** Success + generated `customerId`.
-
-3. **UpdateCustomer**
-
-   - **Input:** `customerId` + fields to update.
-   - **Output:** Updated customer profile.
-
-4. **DeleteCustomer**
-   - **Input:** `customerId`
-   - **Output:** Acknowledgement (success/failure).
+1. CreateOrder
+2. GetOrderStatus
 
 ---
+
+### inside this directory run this to test
+
+```
+curl -v -X POST http://localhost:3006/soap   -H "Content-Type: text/xml"   -H 'SOAPAction: "CreateOrder"'   --data-binary @createOrder.xml
+```
+
+```
+curl -X POST -H "Content-Type: text/xml" --data-binary @getStatus.xml http://localhost:3006/soap
+```
