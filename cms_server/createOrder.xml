@@ -1,0 +1,15 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<soap:Envelope xmlns:soap="http://schemas.xmlsoap.org/soap/envelope/">
+  <soap:Body>
+    <CreateOrderRequest xmlns="http://swiftlogistics.cms/">
+      <ClientId>client-123</ClientId>
+      <ClientOrderRef>frontend-001</ClientOrderRef>
+      <PickupAddress>123 A St</PickupAddress>
+      <DeliveryAddress>456 B Ave</DeliveryAddress>
+      <Items>
+        <Item><Name>Phone</Name><Qty>1</Qty></Item>
+      </Items>
+      <Contact>0770000000</Contact>
+    </CreateOrderRequest>
+  </soap:Body>
+</soap:Envelope>
