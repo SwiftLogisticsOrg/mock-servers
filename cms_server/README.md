@@ -5,6 +5,17 @@ It simulates a SOAP/XML web service that exposes a minimal set of customer-relat
 
 ---
 
+## How to get up and running CMS server
+
+Come inside this directory.
+
+run
+
+```
+npm install
+node index.js
+```
+
 ## 📌 Features
 
 - SOAP/XML API endpoints for customer management.
