@@ -10,45 +10,7 @@ const PORT = process.env.PORT || 4000;
 app.use(morgan('dev'));
 app.use(express.json());
 
-// In-memory data stores
-const drivers = new Map([
-  ['driver-001', {
-    id: 'driver-001',
-    name: 'John Smith',
-    status: 'available',
-    currentLocation: { latitude: 40.7128, longitude: -74.0060 }, // NYC
-    vehicle: 'van-001',
-    maxCapacity: 100,
-    skills: ['fragile', 'heavy']
-  }],
-  ['driver-002', {
-    id: 'driver-002',
-    name: 'Sarah Johnson',
-    status: 'available',
-    currentLocation: { latitude: 40.7589, longitude: -73.9851 }, // Times Square
-    vehicle: 'truck-001',
-    maxCapacity: 200,
-    skills: ['bulk', 'refrigerated']
-  }],
-  ['driver-003', {
-    id: 'driver-003',
-    name: 'Mike Wilson',
-    status: 'available',
-    currentLocation: { latitude: 40.7282, longitude: -73.7949 }, // Queens
-    vehicle: 'van-002',
-    maxCapacity: 80,
-    skills: ['express', 'documents']
-  }],
-  ['driver-004', {
-    id: 'driver-004',
-    name: 'Emma Davis',
-    status: 'on-trip',
-    currentLocation: { latitude: 40.6892, longitude: -74.0445 }, // Brooklyn
-    vehicle: 'motorcycle-001',
-    maxCapacity: 20,
-    skills: ['express', 'small-packages']
-  }]
-]);
+// In-memory data stores (removed driver data as adapter handles this)
 
 // Helper functions
 function generateId() {
@@ -73,23 +35,6 @@ function toRad(degrees) {
   return degrees * (Math.PI/180);
 }
 
-function findNearestAvailableDriver(pickupLocation) {
-  let nearestDriver = null;
-  let minDistance = Infinity;
-
-  for (const [driverId, driver] of drivers) {
-    if (driver.status === 'available') {
-      const distance = calculateDistance(driver.currentLocation, pickupLocation);
-      if (distance < minDistance) {
-        minDistance = distance;
-        nearestDriver = { ...driver, distanceToPickup: distance };
-      }
-    }
-  }
-
-  return nearestDriver;
-}
-
 function simulateProcessingDelay() {
   return new Promise(resolve => {
     const delay = Math.floor(Math.random() * 600) + 200; // 200-800ms
@@ -102,6 +47,52 @@ function calculateETA(distance) {
   return Math.round(distance * 120); // seconds
 }
 
+// Add ETA calculation endpoint for adapter compatibility
+app.post('/api/ros/eta', async (req, res) => {
+  try {
+    await simulateProcessingDelay();
+
+    const { origin, destination, options = {} } = req.body;
+
+    if (!origin?.coordinates || !destination?.coordinates) {
+      return res.status(400).json({
+        status: 'error',
+        message: 'Missing required fields: origin and destination coordinates'
+      });
+    }
+
+    const distance = calculateDistance(
+      { latitude: origin.coordinates.lat, longitude: origin.coordinates.lng },
+      { latitude: destination.coordinates.lat, longitude: destination.coordinates.lng }
+    );
+
+    const duration = calculateETA(distance);
+    const cost = Math.round(distance * 2.5 * 100) / 100; // $2.50 per km
+
+    const response = {
+      status: 'success',
+      distance: Math.round(distance * 100) / 100,
+      duration: duration,
+      cost: cost,
+      route_geometry: null, // Mock geometry
+      traffic_considered: options.traffic || false,
+      vehicle_type: options.vehicle_type || 'car',
+      departure_time: options.departure_time || new Date().toISOString(),
+      timestamp: new Date().toISOString()
+    };
+
+    console.log(`[ROS] ETA calculated: ${distance}km, ${duration}s`);
+    res.json(response);
+
+  } catch (error) {
+    console.error('[ROS] ETA calculation error:', error);
+    res.status(500).json({
+      status: 'error',
+      message: 'Internal server error during ETA calculation'
+    });
+  }
+});
+
 // API Endpoints
 
 // Health check endpoint
@@ -113,39 +104,79 @@ app.get('/health', (req, res) => {
     uptime: process.uptime(),
     endpoints: [
       'GET /health',
-      'POST /api/ros/optimize',
-      'POST /api/ros/assign-driver',
-      'POST /api/ros/drivers/:driverId/location',
-      'GET /api/ros/drivers/:driverId/location',
-      'GET /api/ros/drivers'
+      'POST /optimize',
+      'POST /api/ros/eta'
     ]
   });
 });
 
-// Route optimization endpoint
-app.post('/api/ros/optimize', async (req, res) => {
+// Route optimization endpoint - updated to match adapter expectations
+app.post('/optimize', async (req, res) => {
   try {
     await simulateProcessingDelay();
 
-    const { stops = [], vehicles = [] } = req.body;
+    const { 
+      optimization_profile = 'balanced',
+      locations = [], 
+      vehicles = [],
+      options = {}
+    } = req.body;
 
-    if (!stops.length || !vehicles.length) {
+    if (!locations.length || !vehicles.length) {
       return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: stops and vehicles arrays'
+        status: 'error',
+        message: 'Missing required fields: locations and vehicles arrays'
       });
+    }
+
+    // Validate that all locations have coordinates
+    for (let i = 0; i < locations.length; i++) {
+      if (!locations[i].coordinates?.lat || !locations[i].coordinates?.lng) {
+        return res.status(400).json({
+          status: 'error',
+          message: `Location ${locations[i].id || i} missing coordinates (lat/lng)`
+        });
+      }
+    }
+
+    // Validate that all vehicles have start_location
+    for (let i = 0; i < vehicles.length; i++) {
+      if (!vehicles[i].start_location?.lat || !vehicles[i].start_location?.lng) {
+        return res.status(400).json({
+          status: 'error',
+          message: `Vehicle ${vehicles[i].id || i} missing start_location (lat/lng)`
+        });
+      }
     }
 
     // Simple mock optimization: create sequential routes
     const routes = vehicles.map((vehicle, index) => {
-      const vehicleStops = stops.filter((_, i) => i % vehicles.length === index);
+      const vehicleStops = locations.filter((_, i) => i % vehicles.length === index);
 
-      let currentLocation = vehicle.startLocation || { latitude: 40.7128, longitude: -74.0060 };
+      if (!vehicle.start_location) {
+        throw new Error(`Vehicle ${vehicle.id || index} missing start_location`);
+      }
+
+      let currentLocation = vehicle.start_location;
       let totalDistance = 0;
       let totalDuration = 0;
 
       const steps = vehicleStops.map((stop, stepIndex) => {
-        const distance = calculateDistance(currentLocation, stop.coordinates || stop.location || currentLocation);
+        if (!stop.coordinates) {
+          throw new Error(`Stop ${stop.id || stepIndex} missing coordinates`);
+        }
+
+        const stopCoords = { 
+          latitude: stop.coordinates.lat, 
+          longitude: stop.coordinates.lng 
+        };
+        
+        const currentCoords = { 
+          latitude: currentLocation.lat || currentLocation.latitude, 
+          longitude: currentLocation.lng || currentLocation.longitude 
+        };
+
+        const distance = calculateDistance(currentCoords, stopCoords);
         const duration = calculateETA(distance);
 
         totalDistance += distance;
@@ -153,20 +184,22 @@ app.post('/api/ros/optimize', async (req, res) => {
 
         const now = new Date();
         const arrival = new Date(now.getTime() + totalDuration * 1000);
-        const departure = new Date(arrival.getTime() + (stop.serviceTime || 300) * 1000);
+        const departure = new Date(arrival.getTime() + (stop.service_time || 300) * 1000);
 
-        currentLocation = stop.coordinates || stop.location || currentLocation;
+        currentLocation = { lat: stopCoords.latitude, lng: stopCoords.longitude };
 
         return {
           id: stop.id || `stop-${stepIndex}`,
-          address: stop.address || `Stop ${stepIndex + 1}`,
           type: stop.type || (stepIndex === 0 ? 'pickup' : 'delivery'),
-          arrival: arrival.toISOString(),
-          departure: departure.toISOString(),
           location: {
             address: stop.address || `Stop ${stepIndex + 1}`,
-            coordinates: currentLocation
+            coordinates: {
+              lat: stopCoords.latitude,
+              lng: stopCoords.longitude
+            }
           },
+          arrival: arrival.toISOString(),
+          departure: departure.toISOString(),
           distance: Math.round(distance * 100) / 100,
           duration: duration,
           description: `${stop.type || 'Stop'} at ${stop.address || 'location'}`
@@ -174,7 +207,7 @@ app.post('/api/ros/optimize', async (req, res) => {
       });
 
       return {
-        vehicleId: vehicle.id || `vehicle-${index + 1}`,
+        vehicle_id: vehicle.id || `vehicle-${index + 1}`,
         distance: Math.round(totalDistance * 100) / 100,
         duration: totalDuration,
         cost: Math.round(totalDistance * 2.5 * 100) / 100, // $2.50 per km
@@ -187,242 +220,26 @@ app.post('/api/ros/optimize', async (req, res) => {
     const totalCost = routes.reduce((sum, route) => sum + route.cost, 0);
 
     const response = {
-      success: true,
-      data: {
-        optimized: true,
-        totalDistance: Math.round(totalDistance * 100) / 100,
-        totalDuration: totalDuration,
-        totalCost: Math.round(totalCost * 100) / 100,
-        routes,
-        unassigned: [],
-        metadata: {
-          optimizationTime: Date.now(),
-          provider: 'ros-mock-server',
-          algorithm: 'simple-sequential',
-          timestamp: new Date().toISOString()
-        }
-      }
+      status: 'success',
+      summary: {
+        total_distance: Math.round(totalDistance * 100) / 100,
+        total_time: totalDuration,
+        total_cost: Math.round(totalCost * 100) / 100
+      },
+      routes,
+      unassigned: [],
+      optimization_time: Date.now(),
+      timestamp: new Date().toISOString()
     };
 
-    console.log(`[ROS] Route optimization completed for ${vehicles.length} vehicles, ${stops.length} stops`);
+    console.log(`[ROS] Route optimization completed for ${vehicles.length} vehicles, ${locations.length} locations`);
     res.json(response);
 
   } catch (error) {
     console.error('[ROS] Route optimization error:', error);
     res.status(500).json({
-      success: false,
-      error: 'Internal server error during route optimization'
-    });
-  }
-});
-
-// Driver assignment endpoint
-app.post('/api/ros/assign-driver', async (req, res) => {
-  try {
-    await simulateProcessingDelay();
-
-    const { orderId, pickupLocation, deliveryLocation } = req.body;
-
-    if (!orderId || !pickupLocation) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: orderId and pickupLocation'
-      });
-    }
-
-    // Find the best available driver
-    const assignedDriver = findNearestAvailableDriver(pickupLocation);
-
-    if (!assignedDriver) {
-      return res.status(404).json({
-        success: false,
-        error: 'No available drivers found'
-      });
-    }
-
-    // Update driver status
-    const driver = drivers.get(assignedDriver.id);
-    driver.status = 'on-trip';
-    driver.currentOrder = orderId;
-
-    const etaToPickup = calculateETA(assignedDriver.distanceToPickup);
-
-    console.log(`[ROS] Driver ${assignedDriver.name} assigned to order ${orderId}`);
-
-    res.json({
-      success: true,
-      data: {
-        driverId: assignedDriver.id,
-        name: assignedDriver.name,
-        vehicle: assignedDriver.vehicle,
-        currentLocation: assignedDriver.currentLocation,
-        distanceToPickup: Math.round(assignedDriver.distanceToPickup * 100) / 100,
-        etaToPickup: etaToPickup,
-        estimatedArrival: new Date(Date.now() + etaToPickup * 1000).toISOString(),
-        contact: `+1-555-${Math.floor(Math.random() * 9000) + 1000}`,
-        metadata: {
-          assignedAt: new Date().toISOString(),
-          orderId
-        }
-      }
-    });
-
-  } catch (error) {
-    console.error('[ROS] Driver assignment error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error during driver assignment'
-    });
-  }
-});
-
-// Update driver location endpoint
-app.post('/api/ros/drivers/:driverId/location', (req, res) => {
-  try {
-    const { driverId } = req.params;
-    const { latitude, longitude } = req.body;
-
-    if (!latitude || !longitude) {
-      return res.status(400).json({
-        success: false,
-        error: 'Missing required fields: latitude and longitude'
-      });
-    }
-
-    const driver = drivers.get(driverId);
-    if (!driver) {
-      return res.status(404).json({
-        success: false,
-        error: 'Driver not found'
-      });
-    }
-
-    // Update driver location
-    driver.currentLocation = { latitude, longitude };
-    driver.lastLocationUpdate = new Date().toISOString();
-
-    console.log(`[ROS] Location updated for driver ${driver.name}: ${latitude}, ${longitude}`);
-
-    res.json({
-      success: true,
-      message: 'Location updated successfully',
-      data: {
-        driverId,
-        location: driver.currentLocation,
-        timestamp: driver.lastLocationUpdate
-      }
-    });
-
-  } catch (error) {
-    console.error('[ROS] Location update error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error during location update'
-    });
-  }
-});
-
-// Get driver location endpoint
-app.get('/api/ros/drivers/:driverId/location', (req, res) => {
-  try {
-    const { driverId } = req.params;
-    const driver = drivers.get(driverId);
-
-    if (!driver) {
-      return res.status(404).json({
-        success: false,
-        error: 'Driver not found'
-      });
-    }
-
-    res.json({
-      success: true,
-      data: {
-        driverId,
-        name: driver.name,
-        currentLocation: driver.currentLocation,
-        status: driver.status,
-        lastLocationUpdate: driver.lastLocationUpdate || new Date().toISOString(),
-        vehicle: driver.vehicle
-      }
-    });
-
-  } catch (error) {
-    console.error('[ROS] Get location error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error while retrieving location'
-    });
-  }
-});
-
-// Get all drivers endpoint (for admin/debugging)
-app.get('/api/ros/drivers', (req, res) => {
-  try {
-    const driversArray = Array.from(drivers.values()).map(driver => ({
-      id: driver.id,
-      name: driver.name,
-      status: driver.status,
-      currentLocation: driver.currentLocation,
-      vehicle: driver.vehicle,
-      maxCapacity: driver.maxCapacity,
-      skills: driver.skills,
-      currentOrder: driver.currentOrder || null,
-      lastLocationUpdate: driver.lastLocationUpdate || null
-    }));
-
-    res.json({
-      success: true,
-      data: {
-        drivers: driversArray,
-        total: driversArray.length,
-        available: driversArray.filter(d => d.status === 'available').length,
-        onTrip: driversArray.filter(d => d.status === 'on-trip').length
-      }
-    });
-
-  } catch (error) {
-    console.error('[ROS] Get drivers error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error while retrieving drivers'
-    });
-  }
-});
-
-// Reset driver status endpoint (for testing)
-app.post('/api/ros/drivers/:driverId/reset', (req, res) => {
-  try {
-    const { driverId } = req.params;
-    const driver = drivers.get(driverId);
-
-    if (!driver) {
-      return res.status(404).json({
-        success: false,
-        error: 'Driver not found'
-      });
-    }
-
-    driver.status = 'available';
-    delete driver.currentOrder;
-
-    console.log(`[ROS] Driver ${driver.name} status reset to available`);
-
-    res.json({
-      success: true,
-      message: 'Driver status reset to available',
-      data: {
-        driverId,
-        name: driver.name,
-        status: driver.status
-      }
-    });
-
-  } catch (error) {
-    console.error('[ROS] Reset driver error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error during driver reset'
+      status: 'error',
+      message: 'Internal server error during route optimization'
     });
   }
 });
@@ -430,16 +247,12 @@ app.post('/api/ros/drivers/:driverId/reset', (req, res) => {
 // Error handling middleware
 app.use((req, res) => {
   res.status(404).json({
-    success: false,
-    error: 'Endpoint not found',
+    status: 'error',
+    message: 'Endpoint not found',
     availableEndpoints: [
       'GET /health',
-      'POST /api/ros/optimize',
-      'POST /api/ros/assign-driver',
-      'POST /api/ros/drivers/:driverId/location',
-      'GET /api/ros/drivers/:driverId/location',
-      'GET /api/ros/drivers',
-      'POST /api/ros/drivers/:driverId/reset'
+      'POST /optimize',
+      'POST /api/ros/eta'
     ]
   });
 });
@@ -447,8 +260,8 @@ app.use((req, res) => {
 app.use((error, req, res, next) => {
   console.error('[ROS] Unhandled error:', error);
   res.status(500).json({
-    success: false,
-    error: 'Internal server error'
+    status: 'error',
+    message: 'Internal server error'
   });
 });
 
@@ -456,7 +269,8 @@ app.use((error, req, res, next) => {
 app.listen(PORT, () => {
   console.log(`[ROS MOCK SERVER] Running on http://localhost:${PORT}`);
   console.log(`[ROS MOCK SERVER] Health check: GET /health`);
-  console.log(`[ROS MOCK SERVER] Available drivers: ${drivers.size}`);
+  console.log(`[ROS MOCK SERVER] Route optimization: POST /optimize`);
+  console.log(`[ROS MOCK SERVER] ETA calculation: POST /api/ros/eta`);
   console.log(`[ROS MOCK SERVER] Environment: ${process.env.NODE_ENV || 'development'}`);
 });
 

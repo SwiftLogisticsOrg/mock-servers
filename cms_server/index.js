@@ -1,8 +1,7 @@
-// index.js
-const express = require('express');
-const { parseStringPromise, Builder, processors } = require('xml2js');
-const { v4: uuidv4 } = require('uuid');
-const morgan = require('morgan');
+import express from 'express';
+import { parseStringPromise, Builder, processors } from 'xml2js';
+import { v4 as uuidv4 } from 'uuid';
+import morgan from 'morgan';
 
 const stripPrefix = processors.stripPrefix;
 const app = express();
